@@ -4,6 +4,14 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Shop Ledger</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1b5e56">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Shop Ledger">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,500&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
@@ -541,6 +549,7 @@ function migrateDB(db){
 
 let DB=migrateDB(loadDB());
 let session=null;
+var deferredInstallPrompt=null;
 try{session=JSON.parse(localStorage.getItem(SESSION_KEY)||'null');}catch(e){session=null;}
 initFirebase();
 
@@ -661,7 +670,7 @@ function render(){
       '<div class="sidebar-brand"><div class="brand-mark">'+esc((DB.shopInfo.name||'S')[0])+'</div>'+
         '<div class="brand-text"><div class="name">'+esc(DB.shopInfo.name||'My Shop')+'</div><div class="sub">Shop Ledger</div></div></div>'+
       '<div class="nav">'+nav.map(n=>'<button class="nav-item'+(state.route===n.id?' active':'')+'" data-action="nav" data-route="'+n.id+'">'+icon(n.icon)+'<span>'+n.label+'</span></button>').join('')+'</div>'+
-      '<div class="sidebar-foot"><button class="btn btn-block btn-ghost" data-action="logout">'+icon('logout')+' Logout</button></div>'+
+      '<div class="sidebar-foot">'+(canInstallApp()? '<button class="btn btn-block btn-warm" style="margin-bottom:8px;" data-action="installApp">'+icon('download')+' Install App</button>':'')+'<button class="btn btn-block btn-ghost" data-action="logout">'+icon('logout')+' Logout</button></div>'+
     '</div>'+
     '<div class="main">'+
       '<div class="topbar">'+
@@ -705,6 +714,7 @@ function viewLogin(){
       '<button class="btn btn-primary btn-block" type="submit">Login</button>'+
     '</form>'+
     (cloudConfigured()? '<button class="btn btn-ghost btn-block" style="margin-top:10px;" data-action="openConnectShop">'+icon('exchange')+' Open a shop from another device</button>' : '')+
+    (canInstallApp()? '<button class="btn btn-warm btn-block" style="margin-top:10px;" data-action="installApp">'+icon('download')+' Install App</button>' : '')+
   '</div></div>';
 }
 function showShopCodeModal(title,hint){
@@ -1733,6 +1743,7 @@ const ACTIONS={
   closeModal:()=>closeModal(),
   logout:()=>logout(),
   openConnectShop:()=>openConnectShop(),
+  installApp:()=>installApp(),
   copyShopCode:()=>{if(DB.shopCode&&navigator.clipboard){navigator.clipboard.writeText(DB.shopCode).then(()=>toast('Copied'));}},
   enableCloudSync:()=>{
     if(!cloudReady){toast('Cloud sync is still connecting — try again in a moment',true); return;}
@@ -1918,6 +1929,23 @@ document.addEventListener('visibilitychange',()=>{
     pullFromCloud(DB.shopCode).then(cloudDB=>{DB=migrateDB(cloudDB); localStorage.setItem(STORAGE_KEY,JSON.stringify(DB)); render();}).catch(()=>{});
   }
 });
+
+/* ================= install as app (PWA) ================= */
+window.addEventListener('beforeinstallprompt',(e)=>{
+  e.preventDefault();
+  deferredInstallPrompt=e;
+  if(session)renderContent();
+});
+window.addEventListener('appinstalled',()=>{deferredInstallPrompt=null; if(session)renderContent();});
+function canInstallApp(){return !!deferredInstallPrompt;}
+function installApp(){
+  if(!deferredInstallPrompt)return;
+  deferredInstallPrompt.prompt();
+  deferredInstallPrompt.userChoice.finally(()=>{deferredInstallPrompt=null; renderContent();});
+}
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{navigator.serviceWorker.register('service-worker.js').catch(()=>{});});
+}
 </script>
 </body>
 </html>
