@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<title>Shop Ledger — License Admin</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<style>
+:root{--bg:#eef1ea;--surface:#fff;--border:#dde1d4;--text:#232620;--muted:#6b7062;--accent:#1b5e56;--danger:#c1443c;--ok:#2f8f5c;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;padding:20px}
+.wrap{max-width:900px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-top:16px}
+button{font:inherit;cursor:pointer;border:1px solid var(--border);background:#fff;border-radius:8px;padding:8px 14px;font-weight:600}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.danger{color:var(--danger);border-color:var(--danger)}
+button:disabled{opacity:.5}
+input{font:inherit;padding:8px 10px;border:1px solid var(--border);border-radius:8px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+table{width:100%;border-collapse:collapse;margin-top:10px}
+th{text-align:left;font-size:11px;text-transform:uppercase;color:var(--muted);padding:8px;border-bottom:1px solid var(--border)}
+td{padding:8px;border-bottom:1px solid var(--border);vertical-align:middle}
+.code{font-family:ui-monospace,Consolas,monospace;font-weight:600}
+.pill{padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700}
+.unused{background:#dff2e6;color:var(--ok)} .used{background:#dcebe7;color:var(--accent)} .disabled{background:#f8dedb;color:var(--danger)}
+.muted{color:var(--muted)} .err{color:var(--danger);font-weight:600}
+.scroll{overflow-x:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>License Admin</h1>
+  <div class="muted">Create and manage Shop Ledger license codes. Only the owner account can use this page.</div>
+  <div class="card" id="authCard"></div>
+  <div id="main" hidden>
+    <div class="card">
+      <b>Create new codes</b>
+      <div class="row" style="margin-top:10px">
+        <input id="note" placeholder="Customer name / note (optional)" style="flex:1;min-width:200px">
+        <input id="count" type="number" min="1" max="50" value="1" style="width:80px">
+        <button class="primary" id="genBtn">Generate</button>
+      </div>
+      <div id="genMsg" class="muted" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between"><b>All licenses</b><button id="refreshBtn">Refresh</button></div>
+      <div class="scroll"><table><thead><tr><th>Code</th><th>Note</th><th>Status</th><th>Shop Code</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
+    </div>
+  </div>
+</div>
+<script>
+const FIREBASE_CONFIG={
+  apiKey:"AIzaSyD2PC0_mNm8ZThSj9oN5K0pNN0vOiLzIBw",
+  authDomain:"shop-ledger-a6e5a.firebaseapp.com",
+  projectId:"shop-ledger-a6e5a",
+  storageBucket:"shop-ledger-a6e5a.firebasestorage.app",
+  messagingSenderId:"749511200501",
+  appId:"1:749511200501:web:35432a4a385e7c769c7fbc"
+};
+firebase.initializeApp(FIREBASE_CONFIG);
+const auth=firebase.auth(), db=firebase.firestore();
+const $=id=>document.getElementById(id);
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function genCode(){
+  const ch='ABCDEFGHJKLMNPQRSTUVWXYZ23456789', a=new Uint32Array(12); crypto.getRandomValues(a);
+  const s=Array.from(a,n=>ch[n%ch.length]).join('');
+  return 'SL-'+s.slice(0,4)+'-'+s.slice(4,8)+'-'+s.slice(8,12);
+}
+function renderAuth(user){
+  $('authCard').innerHTML=user
+    ? 'Signed in as <b>'+esc(user.email)+'</b> <button id="outBtn" style="margin-left:10px">Sign out</button>'
+    : '<button class="primary" id="inBtn">Sign in with Google</button>';
+  if(user)$('outBtn').onclick=()=>auth.signOut();
+  else $('inBtn').onclick=()=>auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(e=>{$('authCard').innerHTML+='<div class="err">'+esc(e.message)+'</div>';});
+}
+async function load(){
+  $('rows').innerHTML='<tr><td colspan="5" class="muted">Loading…</td></tr>';
+  try{
+    const qs=await db.collection('licenses').orderBy('createdAt','desc').get();
+    if(qs.empty){$('rows').innerHTML='<tr><td colspan="5" class="muted">No licenses yet.</td></tr>'; return;}
+    $('rows').innerHTML=qs.docs.map(d=>{const x=d.data();
+      return '<tr><td class="code">'+esc(d.id)+'</td><td>'+esc(x.note||'')+'</td><td><span class="pill '+esc(x.status)+'">'+esc(x.status)+'</span></td><td class="code">'+esc(x.shopCode||'—')+'</td><td style="white-space:nowrap">'+
+        '<button data-copy="'+esc(d.id)+'">Copy</button> '+
+        (x.status==='disabled'?'<button data-set="'+esc(d.id)+'" data-to="'+(x.shopCode?'used':'unused')+'">Enable</button>':'<button class="danger" data-set="'+esc(d.id)+'" data-to="disabled">Disable</button>')+'</td></tr>';
+    }).join('');
+  }catch(e){$('rows').innerHTML='<tr><td colspan="5" class="err">'+esc(e.message)+'</td></tr>';}
+}
+$('rows').addEventListener('click',async e=>{
+  const b=e.target.closest('button'); if(!b)return;
+  if(b.dataset.copy){navigator.clipboard.writeText(b.dataset.copy); b.textContent='Copied'; return;}
+  if(b.dataset.set){b.disabled=true; await db.collection('licenses').doc(b.dataset.set).update({status:b.dataset.to}); load();}
+});
+$('refreshBtn').onclick=load;
+$('genBtn').onclick=async()=>{
+  const n=Math.max(1,Math.min(50,Number($('count').value)||1)), note=$('note').value.trim();
+  $('genBtn').disabled=true; $('genMsg').textContent='';
+  try{
+    const batch=db.batch(), codes=[];
+    for(let i=0;i<n;i++){const c=genCode(); codes.push(c); batch.set(db.collection('licenses').doc(c),{status:'unused',shopCode:null,note,createdAt:Date.now()});}
+    await batch.commit();
+    $('genMsg').innerHTML='Created: <span class="code">'+codes.map(esc).join(', ')+'</span>';
+    $('note').value=''; load();
+  }catch(e){$('genMsg').innerHTML='<span class="err">'+esc(e.message)+'</span>';}
+  $('genBtn').disabled=false;
+};
+auth.onAuthStateChanged(user=>{
+  const real=user&&!user.isAnonymous;
+  renderAuth(real?user:null);
+  $('main').hidden=!real;
+  if(real)load();
+});
+</script>
+</body>
+</html>

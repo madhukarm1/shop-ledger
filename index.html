@@ -352,7 +352,7 @@ const CLOUD_RECORD_COLLECTIONS=['bills','expenses','purchases'];
 function cloudCoreData(){
   return {shopInfo:DB.shopInfo, users:DB.users, accounts:DB.accounts, items:DB.items, customers:DB.customers,
     contacts:DB.contacts, fds:DB.fds, udharEntries:DB.udharEntries, udhaarPayments:DB.udhaarPayments,
-    reminders:DB.reminders, billCounter:DB.billCounter, setupComplete:true, updatedAt:Date.now()};
+    reminders:DB.reminders, billCounter:DB.billCounter, licenseCode:DB.licenseCode||null, setupComplete:true, updatedAt:Date.now()};
 }
 let cloudPushTimer=null;
 function queueCloudPush(){
@@ -381,12 +381,36 @@ async function pullFromCloud(shopCode){
   }
   return Object.assign(blankDB(),core,recs,{shopCode,setupComplete:true});
 }
+function normLicense(s){return String(s||'').trim().toUpperCase().replace(/\s+/g,'');}
+async function claimLicense(code,shopCode){
+  const ref=fbDB.collection('licenses').doc(code);
+  const snap=await ref.get();
+  if(!snap.exists)throw new Error('invalid');
+  const st=snap.data().status;
+  if(st==='disabled')throw new Error('disabled');
+  if(st!=='unused')throw new Error('used');
+  await ref.update({status:'used',shopCode:shopCode,usedAt:Date.now()});
+}
+let licenseBlocked=false;
+function checkLicense(){
+  if(!cloudReady||!DB.licenseCode)return;
+  fbDB.collection('licenses').doc(DB.licenseCode).get().then(snap=>{
+    const blocked=snap.exists&&snap.data().status==='disabled';
+    if(blocked!==licenseBlocked){licenseBlocked=blocked; render();}
+  }).catch(()=>{});
+}
+function viewLicenseBlocked(){
+  return '<div class="login-wrap"><div class="login-card" style="text-align:center;">'+
+    '<div class="login-brand"><div class="brand-mark">'+icon('alert',26)+'</div><h1>License Disabled</h1></div>'+
+    '<p class="muted">This shop&#39;s license has been disabled. Please contact the person who sold you this app.</p>'+
+    '<button class="btn btn-block" onclick="checkLicense()">Check Again</button></div></div>';
+}
 function onCloudReady(){
   if(!DB.shopCode){if(session)render(); return;}
   pullFromCloud(DB.shopCode).then(cloudDB=>{
     DB=migrateDB(cloudDB);
     localStorage.setItem(STORAGE_KEY,JSON.stringify(DB));
-    render();
+    render(); checkLicense();
   }).catch(()=>{if(session)render();});
 }
 function cloudStatusTagHTML(){
@@ -510,6 +534,7 @@ function blankDB(){
   return {
     setupComplete:false,
     shopCode:null,
+    licenseCode:null,
     shopInfo:{name:'', address:'', phone:'', gst:''},
     users:[],
     accounts:[{id:uid('acc'),name:'Cash Counter',type:'cash'}],
@@ -542,6 +567,7 @@ function migrateDB(db){
   if(!db.billCounter)db.billCounter=1;
   if(typeof db.setupComplete!=='boolean')db.setupComplete=true;
   if(typeof db.shopCode==='undefined')db.shopCode=null;
+  if(typeof db.licenseCode==='undefined')db.licenseCode=null;
   db.contacts.forEach(c=>{if(typeof c.remark!=='string')c.remark='';});
   db.items.forEach(i=>{if(typeof i.barcode!=='string')i.barcode='';});
   return db;
@@ -657,6 +683,7 @@ function emptyState(iconName,title,desc,actionHtml){
 /* ================= render root ================= */
 function render(){
   const app=document.getElementById('app');
+  if(licenseBlocked){app.innerHTML=viewLicenseBlocked(); return;}
   if(!DB.setupComplete){app.innerHTML=viewSetup(); return;}
   if(!session){app.innerHTML=viewLogin(); return;}
   const u=currentUser();
@@ -739,6 +766,7 @@ function viewSetup(){
     '<div class="login-brand"><div class="brand-mark">'+icon('receipt',26)+'</div><h1>Welcome to Shop Ledger</h1><p>Let&#39;s set up your shop — takes a minute</p></div>'+
     (state.setupError? '<div class="login-error">'+esc(state.setupError)+'</div>':'')+
     '<form data-form="setupWizard">'+
+      (cloudConfigured()? '<div class="section-title">License</div><div class="field"><label>License Code</label><input name="licenseCode" required autofocus autocomplete="off" placeholder="e.g. SL-AB3K-9ZPQ-7XMD" style="font-family:var(--font-mono);text-transform:uppercase;"><div class="hint">You received this code when you bought the app.</div></div><hr class="sep">':'')+
       '<div class="section-title">Shop Details</div>'+
       '<div class="field"><label>Shop Name</label><input name="shopName" required autofocus placeholder="e.g. Sharma Stationery Mart"></div>'+
       '<div class="form-grid">'+
@@ -1818,7 +1846,7 @@ const FORMS={
       DB=migrateDB(cloudDB);
       localStorage.setItem(STORAGE_KEY,JSON.stringify(DB));
       session=null; localStorage.removeItem(SESSION_KEY);
-      closeModal(); toast('Shop connected!'); state.route='login'; render();
+      closeModal(); toast('Shop connected!'); state.route='login'; render(); checkLicense();
     }).catch(err=>{
       if(btn){btn.disabled=false; btn.textContent='Connect';}
       toast(err&&err.message==='not_found'? 'No shop found with that code — check it and try again':'Could not connect — check your internet and try again',true);
@@ -1827,18 +1855,30 @@ const FORMS={
   setupWizard:(fd)=>{
     const shopName=fd.get('shopName').trim(), adminName=fd.get('adminName').trim();
     const username=fd.get('username').trim(), password=fd.get('password');
-    if(!shopName||!adminName||!username||!password){state.setupError='Please fill all the required fields'; render(); return;}
-    DB.shopInfo={name:shopName,phone:fd.get('phone').trim(),gst:fd.get('gst').trim(),address:fd.get('address').trim()};
-    DB.users.push({id:uid('usr'),name:adminName,username,password,role:'admin',active:true});
-    if(fd.get('sampleData')) DB.items=sampleItems();
-    if(cloudConfigured()) DB.shopCode=genShopCode();
-    DB.setupComplete=true;
-    saveDB();
-    state.setupError=null;
-    state.route='login';
-    render();
-    if(DB.shopCode) showShopCodeModal('Shop Set Up!','Save this code — you\'ll need it to open this same shop on another device (phone, another computer).');
-    else toast('Shop set up! Please log in.');
+    if(!shopName||!adminName||!username||!password){toast('Please fill all the required fields',true); return;}
+    const finish=(licenseCode,shopCode)=>{
+      DB.shopInfo={name:shopName,phone:fd.get('phone').trim(),gst:fd.get('gst').trim(),address:fd.get('address').trim()};
+      DB.users.push({id:uid('usr'),name:adminName,username,password,role:'admin',active:true});
+      if(fd.get('sampleData')) DB.items=sampleItems();
+      DB.shopCode=shopCode; DB.licenseCode=licenseCode;
+      DB.setupComplete=true;
+      saveDB();
+      state.route='login';
+      render();
+      if(DB.shopCode) showShopCodeModal('Shop Set Up!','Save this code — you\'ll need it to open this same shop on another device (phone, another computer).');
+      else toast('Shop set up! Please log in.');
+    };
+    if(!cloudConfigured()){finish(null,null); return;}
+    if(!cloudReady){toast('Connecting to the server — wait a moment and try again',true); return;}
+    const lic=normLicense(fd.get('licenseCode'));
+    if(!lic){toast('Enter your License Code',true); return;}
+    const shopCode=genShopCode();
+    const btn=document.querySelector('form[data-form="setupWizard"] button[type="submit"]'); if(btn){btn.disabled=true; btn.textContent='Checking license…';}
+    claimLicense(lic,shopCode).then(()=>finish(lic,shopCode)).catch(err=>{
+      if(btn){btn.disabled=false; btn.textContent='Start Using Shop Ledger';}
+      const m=err&&err.message;
+      toast(m==='invalid'?'License code not found — check and try again':m==='disabled'?'This license has been disabled':m==='used'?'This license code is already used':'Could not verify the license — check your internet and try again',true);
+    });
   },
   addItem:(fd)=>{
     const bc=fd.get('barcode').trim();
@@ -1926,7 +1966,7 @@ render();
 checkReminders();
 document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='visible'&&cloudReady&&DB.shopCode&&session){
-    pullFromCloud(DB.shopCode).then(cloudDB=>{DB=migrateDB(cloudDB); localStorage.setItem(STORAGE_KEY,JSON.stringify(DB)); render();}).catch(()=>{});
+    pullFromCloud(DB.shopCode).then(cloudDB=>{DB=migrateDB(cloudDB); localStorage.setItem(STORAGE_KEY,JSON.stringify(DB)); render(); checkLicense();}).catch(()=>{});
   }
 });
 
